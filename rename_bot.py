@@ -1,130 +1,112 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    CallbackQueryHandler, ConversationHandler, CallbackContext
-)
+import os
+import time
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-ALLOWED_USERS = set()
-ADMIN_ID = 1694669957
+# Bot token and other configurations
+API_TOKEN = '6030851492:AAFCx-U9U6YF0erojkKYk0ieUGulV_IexpA'
+FORCE_JOIN_CHANNEL = 'botsproupdates'  # username only, no @
+ADMIN_IDS = [1694669957]
 
-FILE, NEW_NAME = range(2)
+# Initialize the Pyrogram client with just the Bot Token (no need for API ID and API Hash)
+app = Client("file_rename_bot", bot_token=API_TOKEN)
 
-async def start(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS and user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this bot.")
+# Force join check
+async def is_user_joined(user_id):
+    try:
+        member = await app.get_chat_member(FORCE_JOIN_CHANNEL, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except:
+        return False
+
+# Start command
+@app.on_message(filters.command('start'))
+async def start_msg(client, message):
+    user_id = message.from_user.id
+    if not await is_user_joined(user_id):
+        markup = InlineKeyboardMarkup()
+        join_btn = InlineKeyboardButton("JOIN CHANNEL 🤍", url=f"https://t.me/{FORCE_JOIN_CHANNEL}")
+        markup.add(join_btn)
+        await message.reply(
+            "**You need to join our channel to use this bot. Please join the channel first 🥇**\n\n"
+            "**After joining, press /start again to continue using the bot ✨**",
+            reply_markup=markup,
+            parse_mode="Markdown"
+        )
         return
 
-    keyboard = [
-        [InlineKeyboardButton("BOT UPDATES", url="https://t.me/botsproupdates")],
-        [InlineKeyboardButton("OWNER", callback_data="owner")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(
-        "Hello! I'm a File Rename Bot.\n\nSend me any file, and I'll help you rename it.",
-        reply_markup=reply_markup
+    name = message.from_user.first_name
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("**BOT UPDATES**", url="https://t.me/botsproupdates"),
+        InlineKeyboardButton("**OWNER**", url="https://t.me/zeus_is_here")
+    )
+    await message.reply(
+        f"**Hello {name} 👋🏻**\n\n"
+        "**I am a Simple File Rename Bot 📂**\n"
+        "**Just Send a File and See the magic ✨**\n\n"
+        "**Thanks for Using Our Bot 😄💓**",
+        reply_markup=markup,
+        parse_mode="Markdown"
     )
 
-async def owner_button(update: Update, context: CallbackContext):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("NO OWNER FOR THIS BOT 😅")
-
-async def add_user(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
-        return
-
-    if context.args:
-        new_user_id = int(context.args[0])
-        ALLOWED_USERS.add(new_user_id)
-        await update.message.reply_text(f"User {new_user_id} has been added to the allowed list.")
-    else:
-        await update.message.reply_text("Please provide the user ID to add.")
-
-async def remove_user(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
-        return
-
-    if context.args:
-        remove_user_id = int(context.args[0])
-        if remove_user_id in ALLOWED_USERS:
-            ALLOWED_USERS.remove(remove_user_id)
-            await update.message.reply_text(f"User {remove_user_id} has been removed from the allowed list.")
-        else:
-            await update.message.reply_text("User ID not found in the allowed list.")
-    else:
-        await update.message.reply_text("Please provide the user ID to remove.")
-
-async def list_users(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
-        return
-
-    if ALLOWED_USERS:
-        users_list = "\n".join([str(user) for user in ALLOWED_USERS])
-        await update.message.reply_text(f"Allowed users:\n{users_list}")
-    else:
-        await update.message.reply_text("No users in the allowed list.")
-
-async def handle_file(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS and user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this bot.")
-        return
-
-    if update.message.document:
-        context.user_data['file_id'] = update.message.document.file_id
-        context.user_data['file_name'] = update.message.document.file_name
-        await update.message.reply_text("Please send me the new name for the file (with extension).")
-        return NEW_NAME
-
-async def rename_file(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS and user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this bot.")
-        return
-
-    new_name = update.message.text.strip()
-    if not new_name:
-        await update.message.reply_text("Invalid file name.")
-        return NEW_NAME
-
-    file = await context.bot.get_file(context.user_data['file_id'])
-    await file.download_to_drive(new_name)
-
-    with open(new_name, 'rb') as f:
-        await update.message.reply_document(f, filename=new_name, caption="Thanks for using Bot!")
-
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: CallbackContext):
-    await update.message.reply_text("File renaming cancelled.")
-    return ConversationHandler.END
-
-def main():
-    app = ApplicationBuilder().token("6030851492:AAFCx-U9U6YF0erojkKYk0ieUGulV_IexpA").build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Document.ALL, handle_file)],
-        states={
-            NEW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, rename_file)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+# Help command
+@app.on_message(filters.command('help'))
+async def help_cmd(client, message):
+    await message.reply(
+        "**Bot Commands:**\n"
+        "`/start` - Show the welcome message\n"
+        "`/help` - Show this help message\n\n"
+        "**How to Use:**\n"
+        "1. **Join the updates channel**\n"
+        "2. **Send me any document/file**\n"
+        "3. **It will be renamed and sent back**\n\n"
+        "**Enjoy the bot!**",
+        parse_mode="Markdown"
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("adduser", add_user))
-    app.add_handler(CommandHandler("removeuser", remove_user))
-    app.add_handler(CommandHandler("listusers", list_users))
-    app.add_handler(CallbackQueryHandler(owner_button, pattern="^owner$"))
-    app.add_handler(conv_handler)
+# Handle file messages
+@app.on_message(filters.document)
+async def handle_file(client, message):
+    user_id = message.from_user.id
+    if not await is_user_joined(user_id):
+        markup = InlineKeyboardMarkup()
+        join_btn = InlineKeyboardButton("JOIN CHANNEL 🤍", url=f"https://t.me/{FORCE_JOIN_CHANNEL}")
+        markup.add(join_btn)
+        await message.reply(
+            "**You need to join our channel to use this bot. Please join the channel first 🥇**\n\n"
+            "**After joining, press /start again to continue using the bot ✨**",
+            reply_markup=markup,
+            parse_mode="Markdown"
+        )
+        return
 
-    app.run_polling()
+    # Download the file
+    file_info = await message.download()
+    original_filename = message.document.file_name
+    file_ext = os.path.splitext(original_filename)[1]
 
-if __name__ == '__main__':
-    main()
+    # Rename the file
+    new_filename = f"renamed_{user_id}{file_ext}"
+
+    # Sending animated responses
+    msg = await message.reply("**Receiving your file... 📨**", parse_mode="Markdown")
+    await msg.edit("**Renaming your file... 🔄**")
+    await msg.edit("**Uploading your file... ⏫**")
+
+    # Send the renamed file back
+    await app.send_document(
+        chat_id=message.chat.id,
+        document=file_info,
+        caption="**Here is your renamed file! ✨**",
+        parse_mode="Markdown"
+    )
+
+    await msg.delete()
+    await message.reply("**THANKS FOR USING THIS BOT 💓**", parse_mode="Markdown")
+
+    # Clean up the downloaded file
+    os.remove(file_info)
+
+# Run the bot
+app.run()
