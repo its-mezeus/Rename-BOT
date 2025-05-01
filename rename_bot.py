@@ -4,7 +4,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Bot token and other configurations
-API_TOKEN = '6030851492:AAFCx-U9U6YF0erojkKYk0ieUGulV_IexpA'
+API_TOKEN = '6030851492:AAHRUz-8yp1LglfR5hWDhYriLNRVIGtSCek'
 FORCE_JOIN_CHANNEL = 'botsproupdates'  # username only, no @
 ADMIN_IDS = [1694669957]
 
