@@ -1,68 +1,55 @@
+import os
+import asyncio
+from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-import os
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables
+load_dotenv("config.env")
 
-# Retrieve credentials and settings from environment variables
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-SESSION_STRING = os.getenv("SESSION_STRING")
-FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+FORCE_JOIN_CHANNEL = "botsproupdates"  # Only username, not the full URL
 
-# Initialize the Pyrogram client. Use BOT_TOKEN if provided, else use SESSION_STRING.
-if BOT_TOKEN:
-    app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-else:
-    app = Client(session_name=SESSION_STRING, api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
-
-# Store user file data temporarily
+app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_files = {}
 
 # Messages
 START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
-
 <i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
 <i>I can help you rename files Easily 💓</i>
-<i>Send me any document, audio, or video file and See the Magic 🪄</i>
-"""
-
+<i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
 RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
 <b>Now, please send the new file name (with extension).</b>"""
-
 WAIT_RENAME_MSG = "<b>🔨 Renaming your file... Please wait a moment.</b>"
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
 INVALID_NAME_MSG = """<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"""
-
 ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
-
 This bot allows you to rename any document, video, or audio file in just seconds!
-
 👨💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
 🔄 Fast, simple, and efficient!</i>"""
-
 HELP_MSG = """<i>❓ <b>How to use the bot:</b>
-
 1️⃣ Send me any document, audio, or video file.
 2️⃣ I’ll ask you to provide the new file name (include extension).
 3️⃣ I’ll send back your renamed file — like magic!</i>"""
 
-# Check force join
+# Improved force join check
 async def check_force_join(client, user_id):
     try:
         member = await client.get_chat_member(FORCE_JOIN_CHANNEL, user_id)
+        print(f"[Force Join] User {user_id} status: {member.status}")
         return member.status in ("member", "administrator", "creator")
-    except:
+    except Exception as e:
+        print(f"[Force Join Error] Could not check user {user_id}: {e}")
         return False
 
-# Start/Help command
 @app.on_message(filters.command(["start", "help"]) & filters.private)
 async def start_command(client, message: Message):
     if not await check_force_join(client, message.from_user.id):
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("JOIN CHANNEL ✅", url=f"https://t.me/{FORCE_JOIN_CHANNEL}")]])
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("JOIN CHANNEL ✅", url="https://t.me/botsproupdates")]]
+        )
         await message.reply("<b>🚫 You must join our updates channel to use this bot.</b>", reply_markup=markup)
         return
 
@@ -99,7 +86,7 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
 @app.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def handle_file(client, message: Message):
     if not await check_force_join(client, message.from_user.id):
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("JOIN CHANNEL ✅", url=f"https://t.me/{FORCE_JOIN_CHANNEL}")]])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("JOIN CHANNEL ✅", url="https://t.me/botsproupdates")]])
         await message.reply("<b>🚫 You must join our updates channel to use this bot.</b>", reply_markup=markup)
         return
 
