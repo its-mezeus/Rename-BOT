@@ -3,6 +3,7 @@ import asyncio
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import MessageNotModified
 
 # Load environment variables
 load_dotenv("config.env")
@@ -21,17 +22,31 @@ START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋�
 <i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
 RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
 <b>Now, please send the new file name (with extension).</b>"""
-WAIT_RENAME_MSG = "<b>🔨 Renaming your file... Please wait a moment.</b>"
+WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
 INVALID_NAME_MSG = """<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"""
 ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
 This bot allows you to rename any document, video, or audio file in just seconds!
-👨💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
+👨‍💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
 🔄 Fast, simple, and efficient!</i>"""
 HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 1️⃣ Send me any document, audio, or video file.
 2️⃣ I’ll ask you to provide the new file name (include extension).
 3️⃣ I’ll send back your renamed file — like magic!</i>"""
+
+# Progress bar helper
+def progress_bar(percentage):
+    full = int(percentage / 10)
+    empty = 10 - full
+    return f"[{'█' * full}{'▒' * empty}]"
+
+async def update_progress(message, prefix, current, total):
+    percent = int(current * 100 / total)
+    bar = progress_bar(percent)
+    try:
+        await message.edit_text(f"{prefix}: {percent}% {bar}")
+    except MessageNotModified:
+        pass
 
 @app.on_message(filters.command(["start", "help"]) & filters.private)
 async def start_command(client, message: Message):
@@ -68,9 +83,15 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
 @app.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def handle_file(client, message: Message):
     media = message.document or message.video or message.audio
-    file_path = await message.download()
-    file_name = media.file_name
+    progress_msg = await message.reply("⬇️ Downloading: 0% [▒▒▒▒▒▒▒▒▒▒]")
 
+    file_path = await client.download_media(
+        message,
+        progress=update_progress,
+        progress_args=(progress_msg, "⬇️ Downloading")
+    )
+
+    file_name = media.file_name
     user_files[message.chat.id] = {
         "path": file_path,
         "original_name": file_name,
@@ -99,8 +120,15 @@ async def rename_file(client, message: Message):
     new_path = os.path.join(os.path.dirname(file_info["path"]), new_name)
     os.rename(file_info["path"], new_path)
 
-    await message.reply(WAIT_RENAME_MSG)
-    await message.reply_document(new_path, caption=DONE_RENAME_MSG.format(new_name=new_name))
+    status_msg = await message.reply("✏️ Renaming file...")
+
+    await status_msg.edit_text("⬆️ Uploading: 0% [▒▒▒▒▒▒▒▒▒▒]")
+    await message.reply_document(
+        new_path,
+        caption=DONE_RENAME_MSG.format(new_name=new_name),
+        progress=update_progress,
+        progress_args=(status_msg, "⬆️ Uploading")
+    )
     os.remove(new_path)
 
 app.run()
