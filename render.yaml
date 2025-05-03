@@ -1,10 +1,17 @@
 services:
   - type: web
-    name: pyrogram-file-rename-bot
+    name: file-renamer-bot
     env: python
-    plan: free
-    buildCommand: ""
-    startCommand: python bot.py
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python ren_bot.py"
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.10.12
+      - key: API_ID
+        value: YOUR_API_ID
+      - key: API_HASH
+        value: your_api_hash
+      - key: BOT_TOKEN
+        value: your_bot_token
+      - key: SESSION_STRING
+        value: your_session_string
+      - key: FORCE_JOIN_CHANNEL
+        value: yourchannelusername
