@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: pyrogram-file-rename-bot
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: python bot.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.12
