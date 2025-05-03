@@ -1,34 +1,49 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import os
-import asyncio
+from dotenv import load_dotenv
 
-# Replace with your actual values from https://my.telegram.org
-API_ID = 123456     # <- your API ID
-API_HASH = "your_api_hash_here"  # <- your API hash
+# Load environment variables from .env file
+load_dotenv()
 
-app = Client("my_user", api_id=API_ID, api_hash=API_HASH)
+# Retrieve credentials and settings from environment variables
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_STRING")
+FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-FORCE_JOIN_CHANNEL = "botsproupdates"
+# Initialize the Pyrogram client. Use BOT_TOKEN if provided, else use SESSION_STRING.
+if BOT_TOKEN:
+    app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+else:
+    app = Client(session_name=SESSION_STRING, api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+
+# Store user file data temporarily
 user_files = {}
 
+# Messages
 START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
 
 <i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
 <i>I can help you rename files Easily 💓</i>
 <i>Send me any document, audio, or video file and See the Magic 🪄</i>
 """
+
 RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
 <b>Now, please send the new file name (with extension).</b>"""
+
 WAIT_RENAME_MSG = "<b>🔨 Renaming your file... Please wait a moment.</b>"
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
 INVALID_NAME_MSG = """<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"""
+
 ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
 
 This bot allows you to rename any document, video, or audio file in just seconds!
 
 👨💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
 🔄 Fast, simple, and efficient!</i>"""
+
 HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 
 1️⃣ Send me any document, audio, or video file.
