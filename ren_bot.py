@@ -10,7 +10,6 @@ load_dotenv("config.env")
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-FORCE_JOIN_CHANNEL = "botsproupdates"  # Only username, not the full URL
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_files = {}
@@ -34,25 +33,8 @@ HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 2️⃣ I’ll ask you to provide the new file name (include extension).
 3️⃣ I’ll send back your renamed file — like magic!</i>"""
 
-# Improved force join check
-async def check_force_join(client, user_id):
-    try:
-        member = await client.get_chat_member(FORCE_JOIN_CHANNEL, user_id)
-        print(f"[Force Join] User {user_id} status: {member.status}")
-        return member.status in ("member", "administrator", "creator")
-    except Exception as e:
-        print(f"[Force Join Error] Could not check user {user_id}: {e}")
-        return False
-
 @app.on_message(filters.command(["start", "help"]) & filters.private)
 async def start_command(client, message: Message):
-    if not await check_force_join(client, message.from_user.id):
-        markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("JOIN CHANNEL ✅", url="https://t.me/botsproupdates")]]
-        )
-        await message.reply("<b>🚫 You must join our updates channel to use this bot.</b>", reply_markup=markup)
-        return
-
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("❓ Help", callback_data="help"),
          InlineKeyboardButton("ℹ️ About", callback_data="about")],
@@ -85,11 +67,6 @@ async def handle_callbacks(client, callback_query: CallbackQuery):
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def handle_file(client, message: Message):
-    if not await check_force_join(client, message.from_user.id):
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("JOIN CHANNEL ✅", url="https://t.me/botsproupdates")]])
-        await message.reply("<b>🚫 You must join our updates channel to use this bot.</b>", reply_markup=markup)
-        return
-
     media = message.document or message.video or message.audio
     file_path = await message.download()
     file_name = media.file_name
