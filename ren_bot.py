@@ -10,7 +10,7 @@ from flask import Flask
 load_dotenv("config.env")
 
 API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH"))
+API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -28,21 +28,15 @@ START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋�
 <i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
 <i>I can help you rename files Easily 💓</i>
 <i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
-
 RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
 <b>Now, please send the new file name (with extension).</b>"""
-
 WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
-
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
-
 INVALID_NAME_MSG = """<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"""
-
 ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
 This bot allows you to rename any document, video, or audio file in just seconds!
 👨‍💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
 🔄 Fast, simple, and efficient!</i>"""
-
 HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 1️⃣ Send me any document, audio, or video file.
 2️⃣ I’ll ask you to provide the new file name (include extension).
