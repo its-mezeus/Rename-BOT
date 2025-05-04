@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified
+from flask import Flask
+import threading
 
 # Load environment variables
 load_dotenv("config.env")
@@ -14,6 +16,19 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_files = {}
+
+# Flask App for Uptime Monitoring
+app_http = Flask(__name__)
+
+@app_http.route('/ping')
+def ping():
+    return "Bot is running!", 200
+
+def run_flask():
+    app_http.run(host="0.0.0.0", port=5000)
+
+# Run Flask app in a separate thread
+threading.Thread(target=run_flask).start()
 
 # Messages
 START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
@@ -40,15 +55,13 @@ def progress_bar(percentage):
     empty = 10 - full
     return f"[{'█' * full}{'▒' * empty}]"
 
-def progress_callback_gen(message, prefix):
-    async def progress(current, total):
-        percent = int(current * 100 / total)
-        bar = progress_bar(percent)
-        try:
-            await message.edit_text(f"{prefix}: {percent}% {bar}")
-        except MessageNotModified:
-            pass
-    return progress
+async def update_progress(message, prefix, current, total):
+    percent = int(current * 100 / total)
+    bar = progress_bar(percent)
+    try:
+        await message.edit_text(f"{prefix}: {percent}% {bar}")
+    except MessageNotModified:
+        pass
 
 @app.on_message(filters.command(["start", "help"]) & filters.private)
 async def start_command(client, message: Message):
@@ -89,7 +102,8 @@ async def handle_file(client, message: Message):
 
     file_path = await client.download_media(
         message,
-        progress=progress_callback_gen(progress_msg, "⬇️ Downloading")
+        progress=update_progress,
+        progress_args=(progress_msg, "⬇️ Downloading")
     )
 
     file_name = media.file_name
@@ -124,17 +138,12 @@ async def rename_file(client, message: Message):
     status_msg = await message.reply("✏️ Renaming file...")
 
     await status_msg.edit_text("⬆️ Uploading: 0% [▒▒▒▒▒▒▒▒▒▒]")
-    try:
-        await message.reply_document(
-            new_path,
-            caption=DONE_RENAME_MSG.format(new_name=new_name),
-            progress=progress_callback_gen(status_msg, "⬆️ Uploading")
-        )
-    except Exception as e:
-        await message.reply(f"❌ Failed to upload file: {e}")
-        return
-
-    if os.path.exists(new_path):
-        os.remove(new_path)
+    await message.reply_document(
+        new_path,
+        caption=DONE_RENAME_MSG.format(new_name=new_name),
+        progress=update_progress,
+        progress_args=(status_msg, "⬆️ Uploading")
+    )
+    os.remove(new_path)
 
 app.run()
