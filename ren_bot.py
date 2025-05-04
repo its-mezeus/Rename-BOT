@@ -5,7 +5,6 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified
 from flask import Flask
-import threading
 
 # Load environment variables
 load_dotenv("config.env")
@@ -17,51 +16,44 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 user_files = {}
 
-# Flask App for Uptime Monitoring
-app_http = Flask(__name__)
+# Flask app for uptime monitoring
+flask_app = Flask(__name__)
 
-@app_http.route('/ping')
-def ping():
-    return "Bot is running!", 200
+@flask_app.route("/")
+def index():
+    return "Bot is running!"
 
-def run_flask():
-    app_http.run(host="0.0.0.0", port=5000)
-
-# Run Flask app in a separate thread
-threading.Thread(target=run_flask).start()
-
-# Messages
-START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
-<i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
-<i>I can help you rename files Easily 💓</i>
-<i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
+# Text templates
+START_MSG = """<b>Hello <a href="tg://user?id={user_id}">{user}</a>!</b>
+<i>Welcome to the File Renaming Bot!</i>"""
 RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
-<b>Now, please send the new file name (with extension).</b>"""
+<b>Now, send the new file name (with extension).</b>"""
 WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
-DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
-INVALID_NAME_MSG = """<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"""
-ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
-This bot allows you to rename any document, video, or audio file in just seconds!
-👨‍💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
-🔄 Fast, simple, and efficient!</i>"""
-HELP_MSG = """<i>❓ <b>How to use the bot:</b>
-1️⃣ Send me any document, audio, or video file.
-2️⃣ I’ll ask you to provide the new file name (include extension).
-3️⃣ I’ll send back your renamed file — like magic!</i>"""
+DONE_RENAME_MSG = "<b>✅ Done!</b> File renamed to: <code>{new_name}</code>"
+INVALID_NAME_MSG = """<b>⚠️ Invalid name!</b> Include a valid extension like `.pdf`, `.mp4`."""
+ABOUT_MSG = """🤖 <b>About:</b>
+Rename any document, video, or audio file easily.
+👨‍💻 Dev: <a href="https://t.me/zeus_is_here">ZEUS</a>"""
+HELP_MSG = """❓ <b>How to use:</b>
+1. Send a file
+2. Send new name (with extension)
+3. Get renamed file back"""
 
-# Progress bar helper
+# Progress bar visuals
 def progress_bar(percentage):
     full = int(percentage / 10)
     empty = 10 - full
     return f"[{'█' * full}{'▒' * empty}]"
 
-async def update_progress(message, prefix, current, total):
-    percent = int(current * 100 / total)
-    bar = progress_bar(percent)
-    try:
-        await message.edit_text(f"{prefix}: {percent}% {bar}")
-    except MessageNotModified:
-        pass
+def get_progress_fn(message, prefix):
+    async def progress(current, total):
+        percent = int(current * 100 / total)
+        bar = progress_bar(percent)
+        try:
+            await message.edit_text(f"{prefix}: {percent}% {bar}")
+        except MessageNotModified:
+            pass
+    return progress
 
 @app.on_message(filters.command(["start", "help"]) & filters.private)
 async def start_command(client, message: Message):
@@ -102,8 +94,7 @@ async def handle_file(client, message: Message):
 
     file_path = await client.download_media(
         message,
-        progress=update_progress,
-        progress_args=(progress_msg, "⬇️ Downloading")
+        progress=get_progress_fn(progress_msg, "⬇️ Downloading")
     )
 
     file_name = media.file_name
@@ -138,12 +129,23 @@ async def rename_file(client, message: Message):
     status_msg = await message.reply("✏️ Renaming file...")
 
     await status_msg.edit_text("⬆️ Uploading: 0% [▒▒▒▒▒▒▒▒▒▒]")
-    await message.reply_document(
-        new_path,
-        caption=DONE_RENAME_MSG.format(new_name=new_name),
-        progress=update_progress,
-        progress_args=(status_msg, "⬆️ Uploading")
-    )
-    os.remove(new_path)
 
-app.run()
+    try:
+        await message.reply_document(
+            document=new_path,
+            caption=DONE_RENAME_MSG.format(new_name=new_name),
+            progress=get_progress_fn(status_msg, "⬆️ Uploading")
+        )
+    except Exception as e:
+        await message.reply(f"❌ Upload failed: {e}")
+        return
+
+    await asyncio.sleep(1)
+    if os.path.exists(new_path):
+        os.remove(new_path)
+
+# Start Flask app + bot
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, flask_app.run, "0.0.0.0", 5000)
+    app.run()
