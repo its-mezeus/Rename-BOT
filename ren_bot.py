@@ -40,13 +40,15 @@ def progress_bar(percentage):
     empty = 10 - full
     return f"[{'█' * full}{'▒' * empty}]"
 
-async def update_progress(message, prefix, current, total):
-    percent = int(current * 100 / total)
-    bar = progress_bar(percent)
-    try:
-        await message.edit_text(f"{prefix}: {percent}% {bar}")
-    except MessageNotModified:
-        pass
+def progress_callback_gen(message, prefix):
+    async def progress(current, total):
+        percent = int(current * 100 / total)
+        bar = progress_bar(percent)
+        try:
+            await message.edit_text(f"{prefix}: {percent}% {bar}")
+        except MessageNotModified:
+            pass
+    return progress
 
 @app.on_message(filters.command(["start", "help"]) & filters.private)
 async def start_command(client, message: Message):
@@ -87,8 +89,7 @@ async def handle_file(client, message: Message):
 
     file_path = await client.download_media(
         message,
-        progress=update_progress,
-        progress_args=(progress_msg, "⬇️ Downloading")
+        progress=progress_callback_gen(progress_msg, "⬇️ Downloading")
     )
 
     file_name = media.file_name
@@ -123,12 +124,17 @@ async def rename_file(client, message: Message):
     status_msg = await message.reply("✏️ Renaming file...")
 
     await status_msg.edit_text("⬆️ Uploading: 0% [▒▒▒▒▒▒▒▒▒▒]")
-    await message.reply_document(
-        new_path,
-        caption=DONE_RENAME_MSG.format(new_name=new_name),
-        progress=update_progress,
-        progress_args=(status_msg, "⬆️ Uploading")
-    )
-    os.remove(new_path)
+    try:
+        await message.reply_document(
+            new_path,
+            caption=DONE_RENAME_MSG.format(new_name=new_name),
+            progress=progress_callback_gen(status_msg, "⬆️ Uploading")
+        )
+    except Exception as e:
+        await message.reply(f"❌ Failed to upload file: {e}")
+        return
+
+    if os.path.exists(new_path):
+        os.remove(new_path)
 
 app.run()
