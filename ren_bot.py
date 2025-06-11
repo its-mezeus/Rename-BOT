@@ -8,7 +8,6 @@ from pyrogram.enums import ParseMode
 from flask import Flask
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 API_ID = int(os.getenv("API_ID"))
@@ -17,7 +16,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL")
 
-app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("file_renamer_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 flask_app = Flask(__name__)
 
 user_files = {}
@@ -110,13 +109,49 @@ async def check_force_join(client, message):
         )
         return False
 
-@app.on_callback_query(filters.regex("check_join"))
-async def recheck_join(client, callback_query):
-    if await check_force_join(client, callback_query.message):
-        await callback_query.message.delete()
-        await client.send_message(
-            callback_query.from_user.id,
-            text=START_MSG.format(user=callback_query.from_user.first_name, user_id=callback_query.from_user.id),
+@app.on_callback_query()
+async def handle_callbacks(client, callback_query):
+    data = callback_query.data
+    user_id = callback_query.from_user.id
+    if data == "check_join":
+        await recheck_join(client, callback_query)
+    elif data == "txt_rename":
+        file_info = user_files.get(user_id)
+        if file_info:
+            await callback_query.message.reply(
+                f"✏️ <b>You chose to rename:</b>\n<code>{file_info['original_name']}</code>\n\n"
+                f"📌 Please send the new name including extension (e.g., <code>document.txt</code>)",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+                ]),
+                parse_mode=ParseMode.HTML
+            )
+    elif data == "split_txt":
+        awaiting_split_lines[user_id] = True
+        await callback_query.message.reply("✂️ Send number of lines per split (default is 100):")
+    elif data == "cancel_download":
+        user_cancel_flags[user_id] = True
+        task = download_tasks.get(user_id)
+        if task: task.cancel()
+        await callback_query.message.edit_text("❌ Download cancelled.")
+    elif data == "cancel_upload":
+        task = upload_tasks.get(user_id)
+        if task: task.cancel()
+        await callback_query.message.edit_text("❌ Upload cancelled.")
+    elif data == "cancel_rename":
+        user_files.pop(user_id, None)
+        await callback_query.message.edit_text("❌ Renaming cancelled.")
+    elif data == "help":
+        await callback_query.message.edit_text(HELP_MSG, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="back")]
+        ]), parse_mode=ParseMode.HTML)
+    elif data == "about":
+        await callback_query.message.edit_text(ABOUT_MSG, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="back")]
+        ]), parse_mode=ParseMode.HTML)
+    elif data == "back":
+        await callback_query.message.edit_text(
+            START_MSG.format(user=callback_query.from_user.first_name, user_id=user_id),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❓ Help", callback_data="help"),
                  InlineKeyboardButton("ℹ️ About", callback_data="about")],
@@ -147,27 +182,20 @@ async def handle_file(client, message):
     user_id = message.chat.id
     file_name = media.file_name or "unnamed"
 
-    await client.send_message(
-        chat_id=LOG_CHANNEL_ID,
-        text=f"📥 File received from [{message.from_user.first_name}](tg://user?id={user_id})",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    await client.forward_messages(
-        chat_id=LOG_CHANNEL_ID,
-        from_chat_id=message.chat.id,
-        message_ids=message.id
-    )
+    await client.send_message(LOG_CHANNEL_ID, f"📥 File received from [{message.from_user.first_name}](tg://user?id={user_id})", parse_mode=ParseMode.MARKDOWN)
+    await client.forward_messages(LOG_CHANNEL_ID, message.chat.id, message.id)
 
     progress_msg = await message.reply("⬇️ Downloading: 0%", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_download")]
     ]))
+
     user_cancel_flags[user_id] = False
 
     async def download_and_process():
         try:
             file_path = await client.download_media(message, progress=get_progress_fn(progress_msg, "⬇️ Downloading"))
             if user_cancel_flags.get(user_id):
-                await message.reply("❌ Download was cancelled.")
+                await message.reply("❌ Download cancelled.")
                 await progress_msg.delete()
                 return
             user_files[user_id] = {
@@ -175,17 +203,13 @@ async def handle_file(client, message):
                 "original_name": file_name,
                 "mime": media.mime_type
             }
-            if file_name.lower().endswith(".txt"):
-                btns = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename"),
-                     InlineKeyboardButton("✂️ Split", callback_data="split_txt")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
-                ])
-            else:
-                btns = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
-                ])
-            await message.reply("📄 Choose what to do:", reply_markup=btns)
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename"),
+                 InlineKeyboardButton("✂️ Split", callback_data="split_txt")] if file_name.endswith(".txt")
+                else [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+            ])
+            await message.reply("📄 Choose what to do:", reply_markup=markup)
             await progress_msg.delete()
         except asyncio.CancelledError:
             await progress_msg.edit_text("❌ Download cancelled.")
@@ -193,71 +217,18 @@ async def handle_file(client, message):
             user_cancel_flags.pop(user_id, None)
             download_tasks.pop(user_id, None)
 
-    task = asyncio.create_task(download_and_process())
-    download_tasks[user_id] = task
-
-@app.on_callback_query()
-async def handle_callbacks(client, callback_query):
-    data = callback_query.data
-    user_id = callback_query.from_user.id
-    if data == "txt_rename":
-        file_info = user_files.get(user_id)
-        if file_info:
-            await callback_query.message.reply(
-                RECEIVED_FILE_MSG.format(file_name=file_info['original_name']),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
-                ]),
-                parse_mode=ParseMode.HTML
-            )
-    elif data == "split_txt":
-        awaiting_split_lines[user_id] = True
-        await callback_query.message.reply("✂️ Send number of lines per split (default is 100):")
-    elif data == "cancel_download":
-        user_cancel_flags[user_id] = True
-        task = download_tasks.get(user_id)
-        if task:
-            task.cancel()
-        await callback_query.message.edit_text("❌ Download cancelled by user.")
-    elif data == "cancel_upload":
-        task = upload_tasks.get(user_id)
-        if task:
-            task.cancel()
-        await callback_query.message.edit_text("❌ Upload cancelled by user.")
-    elif data == "cancel_rename":
-        user_files.pop(user_id, None)
-        await callback_query.message.edit_text("❌ Renaming cancelled.")
-    elif data == "help":
-        await callback_query.message.edit_text(HELP_MSG, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="back")]
-        ]), parse_mode=ParseMode.HTML)
-    elif data == "about":
-        await callback_query.message.edit_text(ABOUT_MSG, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="back")]
-        ]), parse_mode=ParseMode.HTML)
-    elif data == "back":
-        await callback_query.message.edit_text(
-            START_MSG.format(user=callback_query.from_user.first_name, user_id=user_id),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❓ Help", callback_data="help"),
-                 InlineKeyboardButton("ℹ️ About", callback_data="about")],
-                [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
-            ]),
-            parse_mode=ParseMode.HTML
-        )
+    download_tasks[user_id] = asyncio.create_task(download_and_process())
 
 @app.on_message(filters.text & filters.private)
-async def handle_text_or_split(client, message):
+async def handle_text(client, message):
     user_id = message.chat.id
+
     if awaiting_split_lines.get(user_id):
         awaiting_split_lines.pop(user_id)
-        try:
-            count = int(message.text.strip())
-        except:
-            count = 100
+        try: count = int(message.text.strip())
+        except: count = 100
         file_info = user_files.pop(user_id, None)
-        if not file_info:
-            return await message.reply("❌ File not found.")
+        if not file_info: return await message.reply("❌ File not found.")
         with open(file_info['path'], "r", encoding="utf-8") as f:
             lines = f.readlines()
         chunks = [lines[i:i+count] for i in range(0, len(lines), count)]
@@ -270,20 +241,28 @@ async def handle_text_or_split(client, message):
             os.remove(path)
         os.remove(file_info['path'])
         return
+
     if user_id not in user_files:
         return await message.reply("⚠️ No file to rename.")
     new_name = message.text.strip()
     if '.' not in new_name or new_name.startswith('.'):
         return await message.reply(INVALID_NAME_MSG, parse_mode=ParseMode.HTML)
+
     file_info = user_files.pop(user_id)
     new_path = os.path.join(os.path.dirname(file_info["path"]), new_name)
     os.rename(file_info["path"], new_path)
     status_msg = await message.reply(WAIT_RENAME_MSG, reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_upload")]
     ]))
+
     async def do_upload():
         try:
-            await message.reply_document(new_path, caption=DONE_RENAME_MSG.format(new_name=new_name), parse_mode=ParseMode.HTML)
+            await message.reply_document(
+                new_path,
+                caption=DONE_RENAME_MSG.format(new_name=new_name),
+                parse_mode=ParseMode.HTML,
+                progress=get_progress_fn(status_msg, "⬆️ Uploading")
+            )
         except asyncio.CancelledError:
             await message.reply("❌ Upload cancelled.")
         finally:
@@ -291,8 +270,8 @@ async def handle_text_or_split(client, message):
             if os.path.exists(new_path):
                 os.remove(new_path)
             upload_tasks.pop(user_id, None)
-    task = asyncio.create_task(do_upload())
-    upload_tasks[user_id] = task
+
+    upload_tasks[user_id] = asyncio.create_task(do_upload())
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
