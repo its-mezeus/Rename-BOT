@@ -1,153 +1,299 @@
 import os
 import asyncio
-from dotenv import load_dotenv
+import time
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, UserNotParticipant
+from pyrogram.enums import ParseMode
 from flask import Flask
+from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv("config.env")
+load_dotenv()
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
+FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL")
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-user_files = {}
-
-# Flask app for uptime monitoring
 flask_app = Flask(__name__)
+
+user_files = {}
+user_cancel_flags = {}
+download_tasks = {}
+upload_tasks = {}
+awaiting_split_lines = {}
 
 @flask_app.route("/")
 def index():
     return "Bot is running!"
 
-# Text templates
 START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
 <i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
 <i>I can help you rename files Easily 💓</i>
 <i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
+
 RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
 <b>Now, please send the new file name (with extension).</b>"""
+
 WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
-INVALID_NAME_MSG = """<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"""
+INVALID_NAME_MSG = "<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"
+
 ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
 This bot allows you to rename any document, video, or audio file in just seconds!
 👨‍💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
 🔄 Fast, simple, and efficient!</i>"""
+
 HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 1️⃣ Send me any document, audio, or video file.
 2️⃣ I’ll ask you to provide the new file name (include extension).
 3️⃣ I’ll send back your renamed file — like magic!</i>"""
 
-# Progress bar visuals
-def progress_bar(percentage):
-    full = int(percentage / 10)
+def progress_bar(percent):
+    full = int(percent / 10)
     empty = 10 - full
     return f"[{'█' * full}{'▒' * empty}]"
 
 def get_progress_fn(message, prefix):
+    start_time = time.time()
+    last_update = {"current": 0, "timestamp": start_time}
+    is_download = "Download" in prefix or "⬇️" in prefix
+    cancel_callback = "cancel_download" if is_download else "cancel_upload"
+    cancel_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data=cancel_callback)]
+    ])
     async def progress(current, total):
+        now = time.time()
+        elapsed = now - last_update["timestamp"]
+        diff = current - last_update["current"]
+        if elapsed < 1.5:
+            return
+        speed = diff / elapsed if elapsed > 0 else 0
+        eta = (total - current) / speed if speed > 0 else 0
         percent = int(current * 100 / total)
         bar = progress_bar(percent)
+        speed_str = f"{speed / 1024:.2f} KB/s" if speed < 1024 * 1024 else f"{speed / (1024 * 1024):.2f} MB/s"
+        eta_str = time.strftime("%M:%S", time.gmtime(eta))
         try:
-            await message.edit_text(f"{prefix}: {percent}% {bar}")
+            await message.edit_text(
+                f"{prefix}: {percent}% {bar}\n"
+                f"📦 {current // 1024} KB of {total // 1024} KB\n"
+                f"🚀 Speed: {speed_str}\n"
+                f"⏳ ETA: {eta_str}",
+                reply_markup=cancel_markup
+            )
         except MessageNotModified:
             pass
+        last_update["current"] = current
+        last_update["timestamp"] = now
     return progress
 
-@app.on_message(filters.command(["start", "help"]) & filters.private)
-async def start_command(client, message: Message):
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("❓ Help", callback_data="help"),
-         InlineKeyboardButton("ℹ️ About", callback_data="about")],
-        [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
-    ])
+async def check_force_join(client, message):
+    try:
+        member = await client.get_chat_member(FORCE_JOIN_CHANNEL, message.from_user.id)
+        if member.status in ["kicked", "banned"]:
+            await message.reply("🚫 You are banned from using this bot.")
+            return False
+        return True
+    except UserNotParticipant:
+        link = await client.export_chat_invite_link(FORCE_JOIN_CHANNEL)
+        await message.reply(
+            "📢 <b>Join our updates channel to use this bot.</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Join Channel", url=link)],
+                [InlineKeyboardButton("🔁 I've Joined", callback_data="check_join")]
+            ]),
+            parse_mode=ParseMode.HTML
+        )
+        return False
+
+@app.on_callback_query(filters.regex("check_join"))
+async def recheck_join(client, callback_query):
+    if await check_force_join(client, callback_query.message):
+        await callback_query.message.delete()
+        await client.send_message(
+            callback_query.from_user.id,
+            text=START_MSG.format(user=callback_query.from_user.first_name, user_id=callback_query.from_user.id),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❓ Help", callback_data="help"),
+                 InlineKeyboardButton("ℹ️ About", callback_data="about")],
+                [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
+            ]),
+            parse_mode=ParseMode.HTML
+        )
+
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(client, message):
+    if not await check_force_join(client, message):
+        return
     await message.reply(
         START_MSG.format(user=message.from_user.first_name, user_id=message.from_user.id),
-        reply_markup=markup
-    )
-
-@app.on_callback_query()
-async def handle_callbacks(client, callback_query: CallbackQuery):
-    data = callback_query.data
-    if data == "help":
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])
-        await callback_query.message.edit_text(HELP_MSG, reply_markup=markup)
-    elif data == "about":
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])
-        await callback_query.message.edit_text(ABOUT_MSG, reply_markup=markup)
-    elif data == "back":
-        markup = InlineKeyboardMarkup([
+        reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("❓ Help", callback_data="help"),
              InlineKeyboardButton("ℹ️ About", callback_data="about")],
             [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
-        ])
-        await callback_query.message.edit_text(
-            START_MSG.format(user=callback_query.from_user.first_name, user_id=callback_query.from_user.id),
-            reply_markup=markup
-        )
+        ]),
+        parse_mode=ParseMode.HTML
+    )
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.audio))
-async def handle_file(client, message: Message):
+async def handle_file(client, message):
+    if not await check_force_join(client, message):
+        return
     media = message.document or message.video or message.audio
-    progress_msg = await message.reply("⬇️ Downloading: 0% [▒▒▒▒▒▒▒▒▒▒]")
+    user_id = message.chat.id
+    file_name = media.file_name or "unnamed"
 
-    file_path = await client.download_media(
-        message,
-        progress=get_progress_fn(progress_msg, "⬇️ Downloading")
+    await client.send_message(
+        chat_id=LOG_CHANNEL_ID,
+        text=f"📥 File received from [{message.from_user.first_name}](tg://user?id={user_id})",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await client.forward_messages(
+        chat_id=LOG_CHANNEL_ID,
+        from_chat_id=message.chat.id,
+        message_ids=message.id
     )
 
-    file_name = media.file_name
-    user_files[message.chat.id] = {
-        "path": file_path,
-        "original_name": file_name,
-        "mime": media.mime_type
-    }
+    progress_msg = await message.reply("⬇️ Downloading: 0%", reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_download")]
+    ]))
+    user_cancel_flags[user_id] = False
 
-    await message.reply(
-        f"<b>✅ File downloaded!</b>\n\n"
-        f"<b>Name:</b> <code>{file_name}</code>\n"
-        f"<b>Size:</b> <code>{media.file_size // 1024} KB</code>\n"
-        f"<b>Type:</b> <code>{media.mime_type}</code>"
-    )
-    await message.reply(RECEIVED_FILE_MSG.format(file_name=file_name))
+    async def download_and_process():
+        try:
+            file_path = await client.download_media(message, progress=get_progress_fn(progress_msg, "⬇️ Downloading"))
+            if user_cancel_flags.get(user_id):
+                await message.reply("❌ Download was cancelled.")
+                await progress_msg.delete()
+                return
+            user_files[user_id] = {
+                "path": file_path,
+                "original_name": file_name,
+                "mime": media.mime_type
+            }
+            if file_name.lower().endswith(".txt"):
+                btns = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename"),
+                     InlineKeyboardButton("✂️ Split", callback_data="split_txt")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+                ])
+            else:
+                btns = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+                ])
+            await message.reply("📄 Choose what to do:", reply_markup=btns)
+            await progress_msg.delete()
+        except asyncio.CancelledError:
+            await progress_msg.edit_text("❌ Download cancelled.")
+        finally:
+            user_cancel_flags.pop(user_id, None)
+            download_tasks.pop(user_id, None)
+
+    task = asyncio.create_task(download_and_process())
+    download_tasks[user_id] = task
+
+@app.on_callback_query()
+async def handle_callbacks(client, callback_query):
+    data = callback_query.data
+    user_id = callback_query.from_user.id
+    if data == "txt_rename":
+        file_info = user_files.get(user_id)
+        if file_info:
+            await callback_query.message.reply(
+                RECEIVED_FILE_MSG.format(file_name=file_info['original_name']),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+                ]),
+                parse_mode=ParseMode.HTML
+            )
+    elif data == "split_txt":
+        awaiting_split_lines[user_id] = True
+        await callback_query.message.reply("✂️ Send number of lines per split (default is 100):")
+    elif data == "cancel_download":
+        user_cancel_flags[user_id] = True
+        task = download_tasks.get(user_id)
+        if task:
+            task.cancel()
+        await callback_query.message.edit_text("❌ Download cancelled by user.")
+    elif data == "cancel_upload":
+        task = upload_tasks.get(user_id)
+        if task:
+            task.cancel()
+        await callback_query.message.edit_text("❌ Upload cancelled by user.")
+    elif data == "cancel_rename":
+        user_files.pop(user_id, None)
+        await callback_query.message.edit_text("❌ Renaming cancelled.")
+    elif data == "help":
+        await callback_query.message.edit_text(HELP_MSG, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="back")]
+        ]), parse_mode=ParseMode.HTML)
+    elif data == "about":
+        await callback_query.message.edit_text(ABOUT_MSG, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="back")]
+        ]), parse_mode=ParseMode.HTML)
+    elif data == "back":
+        await callback_query.message.edit_text(
+            START_MSG.format(user=callback_query.from_user.first_name, user_id=user_id),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❓ Help", callback_data="help"),
+                 InlineKeyboardButton("ℹ️ About", callback_data="about")],
+                [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
+            ]),
+            parse_mode=ParseMode.HTML
+        )
 
 @app.on_message(filters.text & filters.private)
-async def rename_file(client, message: Message):
-    if message.chat.id not in user_files:
+async def handle_text_or_split(client, message):
+    user_id = message.chat.id
+    if awaiting_split_lines.get(user_id):
+        awaiting_split_lines.pop(user_id)
+        try:
+            count = int(message.text.strip())
+        except:
+            count = 100
+        file_info = user_files.pop(user_id, None)
+        if not file_info:
+            return await message.reply("❌ File not found.")
+        with open(file_info['path'], "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        chunks = [lines[i:i+count] for i in range(0, len(lines), count)]
+        for i, chunk in enumerate(chunks, start=1):
+            name = f"{os.path.splitext(file_info['original_name'])[0]}_part{i}.txt"
+            path = os.path.join(os.path.dirname(file_info['path']), name)
+            with open(path, "w", encoding="utf-8") as f2:
+                f2.writelines(chunk)
+            await message.reply_document(path)
+            os.remove(path)
+        os.remove(file_info['path'])
         return
-
+    if user_id not in user_files:
+        return await message.reply("⚠️ No file to rename.")
     new_name = message.text.strip()
     if '.' not in new_name or new_name.startswith('.'):
-        await message.reply(INVALID_NAME_MSG)
-        return
-
-    file_info = user_files.pop(message.chat.id)
+        return await message.reply(INVALID_NAME_MSG, parse_mode=ParseMode.HTML)
+    file_info = user_files.pop(user_id)
     new_path = os.path.join(os.path.dirname(file_info["path"]), new_name)
     os.rename(file_info["path"], new_path)
+    status_msg = await message.reply(WAIT_RENAME_MSG, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_upload")]
+    ]))
+    async def do_upload():
+        try:
+            await message.reply_document(new_path, caption=DONE_RENAME_MSG.format(new_name=new_name), parse_mode=ParseMode.HTML)
+        except asyncio.CancelledError:
+            await message.reply("❌ Upload cancelled.")
+        finally:
+            await status_msg.delete()
+            if os.path.exists(new_path):
+                os.remove(new_path)
+            upload_tasks.pop(user_id, None)
+    task = asyncio.create_task(do_upload())
+    upload_tasks[user_id] = task
 
-    status_msg = await message.reply("✏️ Renaming file...")
-
-    await status_msg.edit_text("⬆️ Uploading: 0% [▒▒▒▒▒▒▒▒▒▒]")
-
-    try:
-        await message.reply_document(
-            document=new_path,
-            caption=DONE_RENAME_MSG.format(new_name=new_name),
-            progress=get_progress_fn(status_msg, "⬆️ Uploading")
-        )
-    except Exception as e:
-        await message.reply(f"❌ Upload failed: {e}")
-        return
-
-    await asyncio.sleep(1)
-    if os.path.exists(new_path):
-        os.remove(new_path)
-
-# Start Flask app + bot
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, flask_app.run, "0.0.0.0", 5000)
