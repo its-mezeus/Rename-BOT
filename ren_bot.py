@@ -1,7 +1,8 @@
 import os
 import asyncio
 import time
-from pyrogram import Client, filters
+from threading import Thread
+from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified, UserNotParticipant
 from pyrogram.enums import ParseMode
@@ -23,7 +24,6 @@ user_files = {}
 user_cancel_flags = {}
 download_tasks = {}
 upload_tasks = {}
-awaiting_split_lines = {}
 
 @flask_app.route("/")
 def index():
@@ -59,7 +59,7 @@ def progress_bar(percent):
 def get_progress_fn(message, prefix):
     start_time = time.time()
     last_update = {"current": 0, "timestamp": start_time}
-    is_download = "Download" in prefix or "⬇️" in prefix
+    is_download = "⬇️" in prefix
     cancel_callback = "cancel_download" if is_download else "cancel_upload"
     cancel_markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=cancel_callback)]])
     async def progress(current, total):
@@ -175,10 +175,9 @@ async def handle_file(client, message: Message):
                 await message.reply("❌ Download cancelled.")
                 return
             user_files[user_id] = {"path": file_path, "original_name": file_name, "mime": media.mime_type}
-            buttons = [
-                [InlineKeyboardButton("✏️ Rename", callback_data="cancel_rename")]
-            ]
-            await message.reply(RECEIVED_FILE_MSG.format(file_name=file_name), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML)
+            await message.reply(RECEIVED_FILE_MSG.format(file_name=file_name), reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+            ]), parse_mode=ParseMode.HTML)
         except asyncio.CancelledError:
             await message.reply("❌ Download cancelled.")
         finally:
@@ -219,7 +218,12 @@ async def rename_file(client, message: Message):
                 os.remove(new_path)
     upload_tasks[user_id] = asyncio.create_task(do_upload())
 
+def start_flask():
+    flask_app.run("0.0.0.0", 5000)
+
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, flask_app.run, "0.0.0.0", 5000)
-    app.run()
+    Thread(target=start_flask).start()
+    app.start()
+    print("Bot is running...")
+    idle()
+    app.stop()
