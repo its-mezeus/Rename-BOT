@@ -1,4 +1,4 @@
-Import os
+import os
 import asyncio
 import time
 from pyrogram import Client, filters
@@ -29,32 +29,34 @@ awaiting_split_lines = {}
 def index():
     return "Bot is running!"
 
-START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
+START_MSG = """<b>Hello <a href="tg://user?id={user_id}">{user}</a>! 👋🏻</b>
+
 <i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
-<i>I can help you rename files Easily 💓</i>
+<i>I can help you rename files Easily 💖</i>
 <i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
 
 RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
 <b>Now, please send the new file name (with extension).</b>"""
 
-WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
+WAIT_RENAME_MSG = "<b>⚙️ Uploading your file... Please wait.</b>"
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
 INVALID_NAME_MSG = "<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"
 
 ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
 This bot allows you to rename any document, video, or audio file in just seconds!
+
 👨‍💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
-🔄 Fast, simple, and efficient!</i>"""
+⚡ Fast, simple, and efficient!</i>"""
 
 HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 1️⃣ Send me any document, audio, or video file.
 2️⃣ I’ll ask you to provide the new file name (include extension).
-3️⃣ I’ll send back your renamed file — like magic!</i>"""
+3️⃣ I’ll send back your renamed file — like magic! ✨</i>"""
 
 def progress_bar(percent):
     full = int(percent / 10)
     empty = 10 - full
-    return f"[{'█' * full}{'▒' * empty}]"
+    return f"[{'█' * full}{'░' * empty}]"
 
 def get_progress_fn(message, prefix):
     start_time = time.time()
@@ -64,6 +66,7 @@ def get_progress_fn(message, prefix):
     cancel_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data=cancel_callback)]
     ])
+
     async def progress(current, total):
         now = time.time()
         elapsed = now - last_update["timestamp"]
@@ -120,7 +123,7 @@ async def handle_callbacks(client, callback_query):
         if file_info:
             await callback_query.message.reply(
                 f"✏️ <b>You chose to rename:</b>\n<code>{file_info['original_name']}</code>\n\n"
-                f"📌 Please send the new name including extension (e.g., <code>document.txt</code>)",
+                f"📜 Please send the new name including extension (e.g., <code>document.txt</code>)",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
                 ]),
@@ -155,7 +158,7 @@ async def handle_callbacks(client, callback_query):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❓ Help", callback_data="help"),
                  InlineKeyboardButton("ℹ️ About", callback_data="about")],
-                [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
+                [InlineKeyboardButton("OWNER 💝", url="https://t.me/zeus_is_here")]
             ]),
             parse_mode=ParseMode.HTML
         )
@@ -169,7 +172,7 @@ async def start_command(client, message):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("❓ Help", callback_data="help"),
              InlineKeyboardButton("ℹ️ About", callback_data="about")],
-            [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
+            [InlineKeyboardButton("OWNER 💝", url="https://t.me/zeus_is_here")]
         ]),
         parse_mode=ParseMode.HTML
     )
