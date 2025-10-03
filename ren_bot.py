@@ -24,10 +24,6 @@ user_cancel_flags = {}
 download_tasks = {}
 upload_tasks = {}
 awaiting_split_lines = {}
-awaiting_thumbnail = set()   # track users waiting to send thumb
-
-THUMB_DIR = "thumbnails"
-os.makedirs(THUMB_DIR, exist_ok=True)
 
 @flask_app.route("/")
 def index():
@@ -52,9 +48,7 @@ This bot allows you to rename any document, video, or audio file in just seconds
 HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 1️⃣ Send me any document, audio, or video file.
 2️⃣ I’ll ask you to provide the new file name (include extension).
-3️⃣ I’ll send back your renamed file — like magic! ✨
-🖼 You can also set a custom thumbnail.
-🗑 Delete your thumbnail anytime with the button below.</i>"""
+3️⃣ I’ll send back your renamed file — like magic! ✨</i>"""
 
 # ----------------- UTILS -----------------
 def progress_bar(percent):
@@ -63,6 +57,7 @@ def progress_bar(percent):
     return f"[{'█' * full}{'░' * empty}]"
 
 def format_size(size: int) -> str:
+    """Convert bytes to human-readable string"""
     if size < 1024**2:
         return f"{size / 1024:.2f} KB"
     elif size < 1024**3:
@@ -71,15 +66,13 @@ def format_size(size: int) -> str:
         return f"{size / (1024**3):.2f} GB"
 
 def format_speed(speed: float) -> str:
+    """Convert speed (bytes/sec) to KB/s, MB/s or GB/s"""
     if speed < 1024**2:
         return f"{speed / 1024:.2f} KB/s"
     elif speed < 1024**3:
         return f"{speed / (1024**2):.2f} MB/s"
     else:
         return f"{speed / (1024**3):.2f} GB/s"
-
-def get_thumb_path(user_id):
-    return os.path.join(THUMB_DIR, f"{user_id}.jpg")
 
 def get_progress_fn(message, prefix):
     start_time = time.time()
@@ -156,28 +149,13 @@ async def handle_callbacks(client, callback_query):
     elif data == "back":
         await callback_query.message.edit_text(
             START_MSG.format(user=callback_query.from_user.first_name, user_id=user_id),
-            reply_markup=start_buttons(),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❓ Help", callback_data="help"),
+                 InlineKeyboardButton("ℹ️ About", callback_data="about")],
+                [InlineKeyboardButton("OWNER 💝", url="https://t.me/zeus_is_here")]
+            ]),
             parse_mode=ParseMode.HTML
         )
-    elif data == "set_thumb":
-        awaiting_thumbnail.add(user_id)
-        await callback_query.message.reply("📸 Please send me the photo you want as thumbnail.")
-    elif data == "delete_thumb":
-        thumb_path = get_thumb_path(user_id)
-        if os.path.exists(thumb_path):
-            os.remove(thumb_path)
-            await callback_query.message.reply("🗑 Thumbnail deleted successfully.")
-        else:
-            await callback_query.message.reply("⚠️ No thumbnail was set.")
-
-def start_buttons():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❓ Help", callback_data="help"),
-         InlineKeyboardButton("ℹ️ About", callback_data="about")],
-        [InlineKeyboardButton("🖼 Set Thumbnail", callback_data="set_thumb"),
-         InlineKeyboardButton("🗑 Delete Thumbnail", callback_data="delete_thumb")],
-        [InlineKeyboardButton("OWNER 💝", url="https://t.me/zeus_is_here")]
-    ])
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
@@ -185,18 +163,13 @@ async def start_command(client, message):
         return
     await message.reply(
         START_MSG.format(user=message.from_user.first_name, user_id=message.from_user.id),
-        reply_markup=start_buttons(),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❓ Help", callback_data="help"),
+             InlineKeyboardButton("ℹ️ About", callback_data="about")],
+            [InlineKeyboardButton("OWNER 💝", url="https://t.me/zeus_is_here")]
+        ]),
         parse_mode=ParseMode.HTML
     )
-
-@app.on_message(filters.photo & filters.private)
-async def save_thumbnail(client, message):
-    user_id = message.chat.id
-    if user_id in awaiting_thumbnail:
-        thumb_path = get_thumb_path(user_id)
-        await message.download(file_name=thumb_path)
-        awaiting_thumbnail.discard(user_id)
-        await message.reply("✅ Custom thumbnail saved successfully!")
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def handle_file(client, message):
@@ -256,17 +229,12 @@ async def handle_text(client, message):
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_upload")]
     ]))
 
-    thumb_path = get_thumb_path(user_id)
-    if not os.path.exists(thumb_path):
-        thumb_path = None
-
     async def do_upload():
         try:
             await message.reply_document(
                 new_path,
                 caption=DONE_RENAME_MSG.format(new_name=new_name),
                 parse_mode=ParseMode.HTML,
-                thumb=thumb_path,
                 progress=get_progress_fn(status_msg, "⬆️ Uploading")
             )
         except asyncio.CancelledError:
