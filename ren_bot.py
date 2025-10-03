@@ -40,7 +40,7 @@ RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
 WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
 INVALID_NAME_MSG = "<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"
-RENAME_FAILED_MSG = "<b>❌ Renaming Failed!</b> <i>The file could not be renamed. It might be open, or the new name contains invalid characters. Try a simpler name.</i>" 
+RENAME_FAILED_MSG = "<b>❌ Renaming Failed!</b> <i>The file could not be renamed. It might be open, or the new name contains invalid characters. Try a simpler name.</i>" # Added for rename error handling
 
 ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
 This bot allows you to rename any document, video, or audio file in just seconds!
@@ -88,6 +88,7 @@ def get_progress_fn(message, prefix):
         speed_str = f"{speed / 1024:.2f} KB/s" if speed < 1024 * 1024 else f"{speed / (1024 * 1024):.2f} MB/s"
         eta_str = time.strftime("%M:%S", time.gmtime(eta))
         
+        # Use the new format_size function
         current_size_str = format_size(current)
         total_size_str = format_size(total)
 
@@ -98,7 +99,7 @@ def get_progress_fn(message, prefix):
                 f"🚀 Speed: {speed_str}\n"
                 f"⏳ ETA: {eta_str}",
                 reply_markup=cancel_markup,
-                parse_mode=ParseMode.HTML 
+                parse_mode=ParseMode.HTML # Ensure HTML parsing is used for bold text
             )
         except MessageNotModified:
             pass
@@ -125,28 +126,14 @@ async def check_force_join(client, message):
         )
         return False
 
-# --- CUSTOM THUMBNAIL LOGIC ---
-async def get_custom_thumb(client, message):
-    thumb_path = None
-    # Look for a photo reply or a photo in the last 5 messages
-    async for msg in client.get_chat_history(message.chat.id, limit=5):
-        if msg.photo:
-            try:
-                # Download the photo to be used as a thumbnail
-                thumb_path = await client.download_media(msg.photo, file_name=f"thumbs/{msg.photo.file_id}.jpg")
-                await msg.reply("🖼️ Custom thumbnail detected and accepted.")
-                return thumb_path
-            except Exception as e:
-                print(f"Error downloading thumbnail: {e}")
-                return None
-    return None
-# -----------------------------
-
 @app.on_callback_query()
 async def handle_callbacks(client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
     if data == "check_join":
+        # The recheck_join function is missing, but assuming its purpose
+        # is to check membership again and edit the message if successful.
+        # For now, we'll keep the structure.
         member = await client.get_chat_member(FORCE_JOIN_CHANNEL, user_id)
         if member.status in ["member", "administrator", "creator"]:
             await callback_query.message.edit_text("✅ You are now a member! Please try sending your file again.", reply_markup=None)
@@ -176,13 +163,11 @@ async def handle_callbacks(client, callback_query):
         if task: task.cancel()
         await callback_query.message.edit_text("❌ Upload cancelled.")
     elif data == "cancel_rename":
+        # Delete the downloaded file on cancel
         file_info = user_files.pop(user_id, None)
         if file_info and os.path.exists(file_info['path']):
             os.remove(file_info['path'])
-        # Also clean up the thumbnail if it exists
-        if file_info and file_info.get('thumb_path') and os.path.exists(file_info['thumb_path']):
-            os.remove(file_info['thumb_path'])
-        await callback_query.message.edit_text("❌ Renaming cancelled. Local files deleted.")
+        await callback_query.message.edit_text("❌ Renaming cancelled. Local file deleted.")
     elif data == "help":
         await callback_query.message.edit_text(HELP_MSG, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Back", callback_data="back")]
@@ -224,10 +209,6 @@ async def handle_file(client, message):
     user_id = message.chat.id
     file_name = media.file_name or "unnamed"
 
-    # --- CUSTOM THUMBNAIL INTEGRATION ---
-    thumb_path = await get_custom_thumb(client, message)
-    # ------------------------------------
-
     await client.send_message(LOG_CHANNEL_ID, f"📥 File received from [{message.from_user.first_name}](tg://user?id={user_id})", parse_mode=ParseMode.MARKDOWN)
     await client.forward_messages(LOG_CHANNEL_ID, message.chat.id, message.id)
 
@@ -238,22 +219,19 @@ async def handle_file(client, message):
     user_cancel_flags[user_id] = False
 
     async def download_and_process():
-        file_path = None
         try:
             file_path = await client.download_media(message, progress=get_progress_fn(progress_msg, "⬇️ Downloading"))
             if user_cancel_flags.get(user_id):
+                # Clean up the downloaded file on cancel
                 if file_path and os.path.exists(file_path):
                     os.remove(file_path)
-                if thumb_path and os.path.exists(thumb_path): # Clean up thumb on cancel
-                    os.remove(thumb_path)
-                await message.reply("❌ Download cancelled. Local files deleted.")
+                await message.reply("❌ Download cancelled. Local file deleted.")
                 await progress_msg.delete()
                 return
             user_files[user_id] = {
                 "path": file_path,
                 "original_name": file_name,
-                "mime": media.mime_type,
-                "thumb_path": thumb_path # Storing the thumbnail path
+                "mime": media.mime_type
             }
             markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename"),
@@ -265,12 +243,6 @@ async def handle_file(client, message):
             await progress_msg.delete()
         except asyncio.CancelledError:
             await progress_msg.edit_text("❌ Download cancelled.")
-        except Exception as e:
-            await message.reply(f"An error occurred during download: {e}")
-            if file_path and os.path.exists(file_path):
-                os.remove(file_path)
-            if thumb_path and os.path.exists(thumb_path):
-                os.remove(thumb_path)
         finally:
             user_cancel_flags.pop(user_id, None)
             download_tasks.pop(user_id, None)
@@ -301,6 +273,7 @@ async def handle_text(client, message):
             os.remove(file_info['path'])
         except Exception as e:
             await message.reply(f"❌ Split Failed! Error: {e}")
+            # Ensure file cleanup if split fails mid-process
             if os.path.exists(file_info['path']):
                 os.remove(file_info['path'])
         return
@@ -314,24 +287,25 @@ async def handle_text(client, message):
     file_info = user_files.pop(user_id)
     old_path = file_info["path"]
     new_path = os.path.join(os.path.dirname(old_path), new_name)
-    thumb_path = file_info.get('thumb_path') # Retrieve thumbnail path
 
+    # --- FIX: Asynchronous File Rename with Error Handling ---
     try:
+        # Use asyncio.to_thread for better async handling of synchronous file ops
         await asyncio.to_thread(os.rename, old_path, new_path)
     except FileNotFoundError:
         await message.reply("❌ Renaming Failed! The original file was not found.")
-        # Cleanup thumb if only it exists
-        if thumb_path and os.path.exists(thumb_path):
-            os.remove(thumb_path)
         return
     except OSError:
+        # This catches "file in use," "permission denied," or "invalid character" errors.
         await message.reply(RENAME_FAILED_MSG, parse_mode=ParseMode.HTML)
-        user_files[user_id] = file_info # Put file back to retry
+        # Put the file back in the user_files map in case they want to retry
+        user_files[user_id] = file_info
         return
     except Exception as e:
         await message.reply(f"❌ An unexpected error occurred during rename: {e}")
-        user_files[user_id] = file_info # Put file back to retry
+        user_files[user_id] = file_info
         return
+    # --------------------------------------------------------
     
     status_msg = await message.reply(WAIT_RENAME_MSG, reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_upload")]
@@ -339,12 +313,10 @@ async def handle_text(client, message):
 
     async def do_upload():
         try:
-            # --- USE THUMBNAIL IN UPLOAD ---
             await message.reply_document(
                 new_path,
                 caption=DONE_RENAME_MSG.format(new_name=new_name),
                 parse_mode=ParseMode.HTML,
-                thumb=thumb_path, # Pass the thumbnail path here
                 progress=get_progress_fn(status_msg, "⬆️ Uploading")
             )
         except asyncio.CancelledError:
@@ -353,18 +325,13 @@ async def handle_text(client, message):
             await message.reply(f"❌ Upload failed: {e}")
         finally:
             await status_msg.delete()
-            # Clean up the renamed file and the thumbnail
             if os.path.exists(new_path):
                 os.remove(new_path)
-            if thumb_path and os.path.exists(thumb_path):
-                os.remove(thumb_path)
             upload_tasks.pop(user_id, None)
 
     upload_tasks[user_id] = asyncio.create_task(do_upload())
 
 if __name__ == "__main__":
-    # Ensure the thumbs directory exists
-    os.makedirs("thumbs", exist_ok=True)
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, flask_app.run, "0.0.0.0", 5000)
     app.run()
