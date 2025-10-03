@@ -1,7 +1,6 @@
 import os
 import asyncio
 import time
-import json # Used for persistent storage (a simple dict for this example)
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified, UserNotParticipant
@@ -11,49 +10,62 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- CONFIGURATION (Load from environment variables) ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL")
-THUMBNAIL_DB_FILE = "user_thumbnails.json" # File to store file_ids
 
-# --- GLOBAL STATE/DATA STORAGE ---
-# Data loaded/saved from the JSON file to keep thumbnail settings permanent
-user_thumbnails = {} 
-try:
-    if os.path.exists(THUMBNAIL_DB_FILE):
-        with open(THUMBNAIL_DB_FILE, 'r') as f:
-            user_thumbnails = json.load(f)
-except Exception as e:
-    print(f"Error loading thumbnails DB: {e}")
+app = Client("file_renamer_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+flask_app = Flask(__name__)
 
 user_files = {}
 user_cancel_flags = {}
 download_tasks = {}
 upload_tasks = {}
 awaiting_split_lines = {}
-awaiting_thumbnail = {} # New state to track if the bot is expecting an image
 
-# --- CLIENT INITIALIZATION ---
-app = Client("file_renamer_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-flask_app = Flask(__name__)
+@flask_app.route("/")
+def index():
+    return "Bot is running!"
 
-# --- UTILITY FUNCTIONS ---
+START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
+<i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
+<i>I can help you rename files Easily 💓</i>
+<i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
 
-def save_user_thumbnails():
-    """Saves the current state of user_thumbnails to a JSON file."""
-    try:
-        with open(THUMBNAIL_DB_FILE, 'w') as f:
-            json.dump(user_thumbnails, f, indent=4)
-    except Exception as e:
-        print(f"Error saving thumbnails DB: {e}")
+RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
+<b>Now, please send the new file name (with extension).</b>"""
+
+WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
+DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
+INVALID_NAME_MSG = "<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"
+RENAME_FAILED_MSG = "<b>❌ Renaming Failed!</b> <i>The file could not be renamed. It might be open, or the new name contains invalid characters. Try a simpler name.</i>" 
+
+ABOUT_MSG = """<i>🤖 <b>About File Renaming Bot:</b>
+This bot allows you to rename any document, video, or audio file in just seconds!
+👨‍💻 Developer: <a href="https://t.me/zeus_is_here">ZEUS</a>
+🔄 Fast, simple, and efficient!</i>"""
+
+HELP_MSG = """<i>❓ <b>How to use the bot:</b>
+1️⃣ Send me any document, audio, or video file.
+2️⃣ I’ll ask you to provide the new file name (include extension).
+3️⃣ I’ll send back your renamed file — like magic!</i>"""
 
 def progress_bar(percent):
     full = int(percent / 10)
     empty = 10 - full
     return f"[{'█' * full}{'▒' * empty}]"
+
+def format_size(size_bytes):
+    """Converts bytes to the most appropriate human-readable format (B, KB, MB, GB)."""
+    if size_bytes == 0:
+        return "0 B"
+    size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+    i = int(os.path.floor(os.path.log(size_bytes, 1024)))
+    p = 1024 ** i
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_name[i]}"
 
 def get_progress_fn(message, prefix):
     start_time = time.time()
@@ -75,13 +87,18 @@ def get_progress_fn(message, prefix):
         bar = progress_bar(percent)
         speed_str = f"{speed / 1024:.2f} KB/s" if speed < 1024 * 1024 else f"{speed / (1024 * 1024):.2f} MB/s"
         eta_str = time.strftime("%M:%S", time.gmtime(eta))
+        
+        current_size_str = format_size(current)
+        total_size_str = format_size(total)
+
         try:
             await message.edit_text(
                 f"{prefix}: {percent}% {bar}\n"
-                f"📦 {current // 1024} KB of {total // 1024} KB\n"
+                f"📦 **{current_size_str}** of **{total_size_str}**\n"
                 f"🚀 Speed: {speed_str}\n"
                 f"⏳ ETA: {eta_str}",
-                reply_markup=cancel_markup
+                reply_markup=cancel_markup,
+                parse_mode=ParseMode.HTML 
             )
         except MessageNotModified:
             pass
@@ -90,7 +107,6 @@ def get_progress_fn(message, prefix):
     return progress
 
 async def check_force_join(client, message):
-    # (Force join logic remains the same)
     try:
         member = await client.get_chat_member(FORCE_JOIN_CHANNEL, message.from_user.id)
         if member.status in ["kicked", "banned"]:
@@ -109,153 +125,97 @@ async def check_force_join(client, message):
         )
         return False
 
-def get_start_markup(user_id):
-    """Generates the main start keyboard with the new Thumbnail button."""
-    thumb_status = "🖼️ Set Custom Thumbnail"
-    if str(user_id) in user_thumbnails:
-        thumb_status = "✅ Custom Thumbnail Set (Reset)"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❓ Help", callback_data="help"),
-         InlineKeyboardButton("ℹ️ About", callback_data="about")],
-        [InlineKeyboardButton(thumb_status, callback_data="set_thumb" if str(user_id) not in user_thumbnails else "reset_thumb")],
-        [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
-    ])
+# --- CUSTOM THUMBNAIL LOGIC ---
+async def get_custom_thumb(client, message):
+    thumb_path = None
+    # Look for a photo reply or a photo in the last 5 messages
+    async for msg in client.get_chat_history(message.chat.id, limit=5):
+        if msg.photo:
+            try:
+                # Download the photo to be used as a thumbnail
+                thumb_path = await client.download_media(msg.photo, file_name=f"thumbs/{msg.photo.file_id}.jpg")
+                await msg.reply("🖼️ Custom thumbnail detected and accepted.")
+                return thumb_path
+            except Exception as e:
+                print(f"Error downloading thumbnail: {e}")
+                return None
+    return None
+# -----------------------------
 
-# --- BOT MESSAGES ---
-START_MSG = """<b> Hello <a href="tg://user?id={user_id}">{user}</a>!</b> 👋🏻
-<i>Welcome to <b>File Renaming Bot!</b> ✂️</i>
-<i>I can help you rename files Easily 💓</i>
-<i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
-
-RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
-<b>Now, please send the new file name (with extension).</b>"""
-
-WAIT_RENAME_MSG = "<b>🔨 Uploading your file... Please wait.</b>"
-DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
-INVALID_NAME_MSG = "<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"
-THUMB_SET_MSG = "🖼️ **Custom Thumbnail Set:**\nSend me the **photo** you want to use as your permanent thumbnail for all future uploads."
-THUMB_RESET_MSG = "❌ **Thumbnail Reset:**\nYour custom thumbnail has been removed. Future files will use Telegram's default thumbnail."
-
-# --- FLASK APP ---
-@flask_app.route("/")
-def index():
-    return "Bot is running!"
-
-# --- CALLBACK HANDLER ---
 @app.on_callback_query()
 async def handle_callbacks(client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
-    user_id_str = str(user_id)
-    
-    # Reset thumbnail waiting state on any non-thumbnail action
-    if user_id in awaiting_thumbnail and data not in ["set_thumb", "reset_thumb", "confirm_set_thumb"]:
-        awaiting_thumbnail.pop(user_id, None)
-
     if data == "check_join":
-        await recheck_join(client, callback_query) # Recheck join is not defined but we assume it's elsewhere
-    
-    # --- NEW THUMBNAIL LOGIC ---
-    elif data == "set_thumb":
-        awaiting_thumbnail[user_id] = True
-        await callback_query.message.edit_text(THUMB_SET_MSG, parse_mode=ParseMode.MARKDOWN)
-    
-    elif data == "reset_thumb":
-        if user_id_str in user_thumbnails:
-            user_thumbnails.pop(user_id_str)
-            save_user_thumbnails()
-            await callback_query.message.edit_text(THUMB_RESET_MSG, reply_markup=get_start_markup(user_id), parse_mode=ParseMode.MARKDOWN)
+        member = await client.get_chat_member(FORCE_JOIN_CHANNEL, user_id)
+        if member.status in ["member", "administrator", "creator"]:
+            await callback_query.message.edit_text("✅ You are now a member! Please try sending your file again.", reply_markup=None)
         else:
-            await callback_query.answer("No custom thumbnail found to reset.", show_alert=True)
-
+            await callback_query.answer("⚠️ You still need to join the channel.", show_alert=True)
+    elif data == "txt_rename":
+        file_info = user_files.get(user_id)
+        if file_info:
+            await callback_query.message.reply(
+                f"✏️ <b>You chose to rename:</b>\n<code>{file_info['original_name']}</code>\n\n"
+                f"📌 Please send the new name including extension (e.g., <code>document.txt</code>)",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+                ]),
+                parse_mode=ParseMode.HTML
+            )
+    elif data == "split_txt":
+        awaiting_split_lines[user_id] = True
+        await callback_query.message.reply("✂️ Send number of lines per split (default is 100):")
     elif data == "cancel_download":
         user_cancel_flags[user_id] = True
         task = download_tasks.get(user_id)
         if task: task.cancel()
         await callback_query.message.edit_text("❌ Download cancelled.")
-        
     elif data == "cancel_upload":
         task = upload_tasks.get(user_id)
         if task: task.cancel()
         await callback_query.message.edit_text("❌ Upload cancelled.")
-        
     elif data == "cancel_rename":
-        user_files.pop(user_id, None)
-        await callback_query.message.edit_text("❌ Renaming cancelled.")
-        
+        file_info = user_files.pop(user_id, None)
+        if file_info and os.path.exists(file_info['path']):
+            os.remove(file_info['path'])
+        # Also clean up the thumbnail if it exists
+        if file_info and file_info.get('thumb_path') and os.path.exists(file_info['thumb_path']):
+            os.remove(file_info['thumb_path'])
+        await callback_query.message.edit_text("❌ Renaming cancelled. Local files deleted.")
     elif data == "help":
         await callback_query.message.edit_text(HELP_MSG, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Back", callback_data="back")]
         ]), parse_mode=ParseMode.HTML)
-        
     elif data == "about":
         await callback_query.message.edit_text(ABOUT_MSG, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Back", callback_data="back")]
         ]), parse_mode=ParseMode.HTML)
-        
     elif data == "back":
         await callback_query.message.edit_text(
             START_MSG.format(user=callback_query.from_user.first_name, user_id=user_id),
-            reply_markup=get_start_markup(user_id), # Use new markup function
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❓ Help", callback_data="help"),
+                 InlineKeyboardButton("ℹ️ About", callback_data="about")],
+                [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
+            ]),
             parse_mode=ParseMode.HTML
         )
-    
-    else:
-        # Original rename/split logic (remains the same)
-        file_info = user_files.get(user_id)
-        if data == "txt_rename":
-            if file_info:
-                await callback_query.message.reply(
-                    f"✏️ <b>You chose to rename:</b>\n<code>{file_info['original_name']}</code>\n\n"
-                    f"📌 Please send the new name including extension (e.g., <code>document.txt</code>)",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
-                    ]),
-                    parse_mode=ParseMode.HTML
-                )
-        elif data == "split_txt":
-            awaiting_split_lines[user_id] = True
-            await callback_query.message.reply("✂️ Send number of lines per split (default is 100):")
 
-# --- START COMMAND ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
     if not await check_force_join(client, message):
         return
     await message.reply(
         START_MSG.format(user=message.from_user.first_name, user_id=message.from_user.id),
-        reply_markup=get_start_markup(message.from_user.id), # Use new markup function
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❓ Help", callback_data="help"),
+             InlineKeyboardButton("ℹ️ About", callback_data="about")],
+            [InlineKeyboardButton("OWNER 🤍", url="https://t.me/zeus_is_here")]
+        ]),
         parse_mode=ParseMode.HTML
     )
 
-# --- NEW: THUMBNAIL PHOTO HANDLER ---
-@app.on_message(filters.photo & filters.private)
-async def handle_thumbnail_photo(client, message: Message):
-    user_id = message.chat.id
-    user_id_str = str(user_id)
-
-    if user_id in awaiting_thumbnail:
-        awaiting_thumbnail.pop(user_id)
-        
-        # Get the file_id of the largest photo size
-        photo_id = message.photo.file_id
-        
-        # Store the file_id for future reuse
-        user_thumbnails[user_id_str] = photo_id
-        save_user_thumbnails()
-
-        # Reply with confirmation and display the stored thumbnail
-        await message.reply_photo(
-            photo=photo_id,
-            caption="✅ **Success!** Your permanent custom thumbnail has been set.",
-            reply_markup=get_start_markup(user_id),
-            parse_mode=ParseMode.MARKDOWN
-        )
-    # If the user is not in the 'awaiting_thumbnail' state, this is just a regular photo upload
-    # The bot will proceed with the file renaming logic if it receives a document/video/audio,
-    # but regular photos are ignored by the file handler, so no other action is needed here.
-
-# --- FILE HANDLER (Document, Video, Audio) ---
 @app.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def handle_file(client, message):
     if not await check_force_join(client, message):
@@ -264,9 +224,10 @@ async def handle_file(client, message):
     user_id = message.chat.id
     file_name = media.file_name or "unnamed"
 
-    # Reset thumbnail waiting state if user sends a file
-    awaiting_thumbnail.pop(user_id, None) 
-    
+    # --- CUSTOM THUMBNAIL INTEGRATION ---
+    thumb_path = await get_custom_thumb(client, message)
+    # ------------------------------------
+
     await client.send_message(LOG_CHANNEL_ID, f"📥 File received from [{message.from_user.first_name}](tg://user?id={user_id})", parse_mode=ParseMode.MARKDOWN)
     await client.forward_messages(LOG_CHANNEL_ID, message.chat.id, message.id)
 
@@ -277,17 +238,22 @@ async def handle_file(client, message):
     user_cancel_flags[user_id] = False
 
     async def download_and_process():
-        # (Download logic remains the same)
+        file_path = None
         try:
             file_path = await client.download_media(message, progress=get_progress_fn(progress_msg, "⬇️ Downloading"))
             if user_cancel_flags.get(user_id):
-                await message.reply("❌ Download cancelled.")
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                if thumb_path and os.path.exists(thumb_path): # Clean up thumb on cancel
+                    os.remove(thumb_path)
+                await message.reply("❌ Download cancelled. Local files deleted.")
                 await progress_msg.delete()
                 return
             user_files[user_id] = {
                 "path": file_path,
                 "original_name": file_name,
-                "mime": media.mime_type
+                "mime": media.mime_type,
+                "thumb_path": thumb_path # Storing the thumbnail path
             }
             markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename"),
@@ -299,83 +265,106 @@ async def handle_file(client, message):
             await progress_msg.delete()
         except asyncio.CancelledError:
             await progress_msg.edit_text("❌ Download cancelled.")
+        except Exception as e:
+            await message.reply(f"An error occurred during download: {e}")
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+            if thumb_path and os.path.exists(thumb_path):
+                os.remove(thumb_path)
         finally:
             user_cancel_flags.pop(user_id, None)
             download_tasks.pop(user_id, None)
 
     download_tasks[user_id] = asyncio.create_task(download_and_process())
 
-# --- TEXT HANDLER (New Name / Split Lines) ---
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
     user_id = message.chat.id
-    user_id_str = str(user_id)
-    
-    # Reset thumbnail waiting state if user sends text
-    awaiting_thumbnail.pop(user_id, None)
 
-    # --- Split Logic (remains the same) ---
     if awaiting_split_lines.get(user_id):
         awaiting_split_lines.pop(user_id)
         try: count = int(message.text.strip())
         except: count = 100
         file_info = user_files.pop(user_id, None)
         if not file_info: return await message.reply("❌ File not found.")
-        # ... (rest of split logic) ...
-        with open(file_info['path'], "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        chunks = [lines[i:i+count] for i in range(0, len(lines), count)]
-        for i, chunk in enumerate(chunks, start=1):
-            name = f"{os.path.splitext(file_info['original_name'])[0]}_part{i}.txt"
-            path = os.path.join(os.path.dirname(file_info['path']), name)
-            with open(path, "w", encoding="utf-8") as f2:
-                f2.writelines(chunk)
-            await message.reply_document(path)
-            os.remove(path)
-        os.remove(file_info['path'])
+        try:
+            with open(file_info['path'], "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            chunks = [lines[i:i+count] for i in range(0, len(lines), count)]
+            for i, chunk in enumerate(chunks, start=1):
+                name = f"{os.path.splitext(file_info['original_name'])[0]}_part{i}.txt"
+                path = os.path.join(os.path.dirname(file_info['path']), name)
+                with open(path, "w", encoding="utf-8") as f2:
+                    f2.writelines(chunk)
+                await message.reply_document(path)
+                os.remove(path)
+            os.remove(file_info['path'])
+        except Exception as e:
+            await message.reply(f"❌ Split Failed! Error: {e}")
+            if os.path.exists(file_info['path']):
+                os.remove(file_info['path'])
         return
 
-    # --- Rename Logic (updated for custom thumbnail) ---
     if user_id not in user_files:
         return await message.reply("⚠️ No file to rename.")
-        
     new_name = message.text.strip()
     if '.' not in new_name or new_name.startswith('.'):
         return await message.reply(INVALID_NAME_MSG, parse_mode=ParseMode.HTML)
 
     file_info = user_files.pop(user_id)
-    new_path = os.path.join(os.path.dirname(file_info["path"]), new_name)
-    os.rename(file_info["path"], new_path)
+    old_path = file_info["path"]
+    new_path = os.path.join(os.path.dirname(old_path), new_name)
+    thumb_path = file_info.get('thumb_path') # Retrieve thumbnail path
+
+    try:
+        await asyncio.to_thread(os.rename, old_path, new_path)
+    except FileNotFoundError:
+        await message.reply("❌ Renaming Failed! The original file was not found.")
+        # Cleanup thumb if only it exists
+        if thumb_path and os.path.exists(thumb_path):
+            os.remove(thumb_path)
+        return
+    except OSError:
+        await message.reply(RENAME_FAILED_MSG, parse_mode=ParseMode.HTML)
+        user_files[user_id] = file_info # Put file back to retry
+        return
+    except Exception as e:
+        await message.reply(f"❌ An unexpected error occurred during rename: {e}")
+        user_files[user_id] = file_info # Put file back to retry
+        return
+    
     status_msg = await message.reply(WAIT_RENAME_MSG, reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_upload")]
     ]))
-    
-    # Check for custom thumbnail file_id
-    custom_thumb_id = user_thumbnails.get(user_id_str)
 
     async def do_upload():
         try:
+            # --- USE THUMBNAIL IN UPLOAD ---
             await message.reply_document(
                 new_path,
                 caption=DONE_RENAME_MSG.format(new_name=new_name),
                 parse_mode=ParseMode.HTML,
-                progress=get_progress_fn(status_msg, "⬆️ Uploading"),
-                # --- NEW: Apply custom thumbnail if set ---
-                thumb=custom_thumb_id if custom_thumb_id else None 
-                # ----------------------------------------
+                thumb=thumb_path, # Pass the thumbnail path here
+                progress=get_progress_fn(status_msg, "⬆️ Uploading")
             )
         except asyncio.CancelledError:
             await message.reply("❌ Upload cancelled.")
+        except Exception as e:
+            await message.reply(f"❌ Upload failed: {e}")
         finally:
             await status_msg.delete()
+            # Clean up the renamed file and the thumbnail
             if os.path.exists(new_path):
                 os.remove(new_path)
+            if thumb_path and os.path.exists(thumb_path):
+                os.remove(thumb_path)
             upload_tasks.pop(user_id, None)
 
     upload_tasks[user_id] = asyncio.create_task(do_upload())
 
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
+    # Ensure the thumbs directory exists
+    os.makedirs("thumbs", exist_ok=True)
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, flask_app.run, "0.0.0.0", 5000)
     app.run()
