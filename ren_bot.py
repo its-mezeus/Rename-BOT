@@ -35,6 +35,9 @@ START_MSG = """<b>Hello <a href="tg://user?id={user_id}">{user}</a>! 👋🏻</b
 <i>I can help you rename files Easily 💖</i>
 <i>Send me any document, audio, or video file and See the Magic 🪄</i>"""
 
+RECEIVED_FILE_MSG = """<b>📄 File received:</b> <code>{file_name}</code>
+<b>Now, please send the new file name (with extension).</b>"""
+
 WAIT_RENAME_MSG = "<b>⚙️ Uploading your file... Please wait.</b>"
 DONE_RENAME_MSG = "<b>✅ Done!</b> Your file has been renamed to: <code>{new_name}</code>"
 INVALID_NAME_MSG = "<b>⚠️ Invalid format!</b> <i>Include a valid extension (e.g., .txt, .pdf).</i>"
@@ -50,29 +53,10 @@ HELP_MSG = """<i>❓ <b>How to use the bot:</b>
 2️⃣ I’ll ask you to provide the new file name (include extension).
 3️⃣ I’ll send back your renamed file — like magic! ✨</i>"""
 
-# ----------------- UTILS -----------------
 def progress_bar(percent):
     full = int(percent / 10)
     empty = 10 - full
     return f"[{'█' * full}{'░' * empty}]"
-
-def format_size(size: int) -> str:
-    """Convert bytes to human-readable string"""
-    if size < 1024**2:
-        return f"{size / 1024:.2f} KB"
-    elif size < 1024**3:
-        return f"{size / (1024**2):.2f} MB"
-    else:
-        return f"{size / (1024**3):.2f} GB"
-
-def format_speed(speed: float) -> str:
-    """Convert speed (bytes/sec) to KB/s, MB/s or GB/s"""
-    if speed < 1024**2:
-        return f"{speed / 1024:.2f} KB/s"
-    elif speed < 1024**3:
-        return f"{speed / (1024**2):.2f} MB/s"
-    else:
-        return f"{speed / (1024**3):.2f} GB/s"
 
 def get_progress_fn(message, prefix):
     start_time = time.time()
@@ -93,16 +77,12 @@ def get_progress_fn(message, prefix):
         eta = (total - current) / speed if speed > 0 else 0
         percent = int(current * 100 / total)
         bar = progress_bar(percent)
-
-        current_str = format_size(current)
-        total_str = format_size(total)
-        speed_str = format_speed(speed)
+        speed_str = f"{speed / 1024:.2f} KB/s" if speed < 1024 * 1024 else f"{speed / (1024 * 1024):.2f} MB/s"
         eta_str = time.strftime("%M:%S", time.gmtime(eta))
-
         try:
             await message.edit_text(
                 f"{prefix}: {percent}% {bar}\n"
-                f"📦 {current_str} of {total_str}\n"
+                f"📦 {current // 1024} KB of {total // 1024} KB\n"
                 f"🚀 Speed: {speed_str}\n"
                 f"⏳ ETA: {eta_str}",
                 reply_markup=cancel_markup
@@ -113,7 +93,6 @@ def get_progress_fn(message, prefix):
         last_update["timestamp"] = now
     return progress
 
-# ----------------- FORCE JOIN -----------------
 async def check_force_join(client, message):
     try:
         member = await client.get_chat_member(FORCE_JOIN_CHANNEL, message.from_user.id)
@@ -133,12 +112,39 @@ async def check_force_join(client, message):
         )
         return False
 
-# ----------------- HANDLERS -----------------
 @app.on_callback_query()
 async def handle_callbacks(client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
-    if data == "help":
+    if data == "check_join":
+        await recheck_join(client, callback_query)
+    elif data == "txt_rename":
+        file_info = user_files.get(user_id)
+        if file_info:
+            await callback_query.message.reply(
+                f"✏️ <b>You chose to rename:</b>\n<code>{file_info['original_name']}</code>\n\n"
+                f"📜 Please send the new name including extension (e.g., <code>document.txt</code>)",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
+                ]),
+                parse_mode=ParseMode.HTML
+            )
+    elif data == "split_txt":
+        awaiting_split_lines[user_id] = True
+        await callback_query.message.reply("✂️ Send number of lines per split (default is 100):")
+    elif data == "cancel_download":
+        user_cancel_flags[user_id] = True
+        task = download_tasks.get(user_id)
+        if task: task.cancel()
+        await callback_query.message.edit_text("❌ Download cancelled.")
+    elif data == "cancel_upload":
+        task = upload_tasks.get(user_id)
+        if task: task.cancel()
+        await callback_query.message.edit_text("❌ Upload cancelled.")
+    elif data == "cancel_rename":
+        user_files.pop(user_id, None)
+        await callback_query.message.edit_text("❌ Renaming cancelled.")
+    elif data == "help":
         await callback_query.message.edit_text(HELP_MSG, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Back", callback_data="back")]
         ]), parse_mode=ParseMode.HTML)
@@ -201,7 +207,10 @@ async def handle_file(client, message):
                 "mime": media.mime_type
             }
             markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename")]
+                [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename"),
+                 InlineKeyboardButton("✂️ Split", callback_data="split_txt")] if file_name.endswith(".txt")
+                else [InlineKeyboardButton("✏️ Rename", callback_data="txt_rename")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_rename")]
             ])
             await message.reply("📄 Choose what to do:", reply_markup=markup)
             await progress_msg.delete()
@@ -216,6 +225,26 @@ async def handle_file(client, message):
 @app.on_message(filters.text & filters.private)
 async def handle_text(client, message):
     user_id = message.chat.id
+
+    if awaiting_split_lines.get(user_id):
+        awaiting_split_lines.pop(user_id)
+        try: count = int(message.text.strip())
+        except: count = 100
+        file_info = user_files.pop(user_id, None)
+        if not file_info: return await message.reply("❌ File not found.")
+        with open(file_info['path'], "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        chunks = [lines[i:i+count] for i in range(0, len(lines), count)]
+        for i, chunk in enumerate(chunks, start=1):
+            name = f"{os.path.splitext(file_info['original_name'])[0]}_part{i}.txt"
+            path = os.path.join(os.path.dirname(file_info['path']), name)
+            with open(path, "w", encoding="utf-8") as f2:
+                f2.writelines(chunk)
+            await message.reply_document(path)
+            os.remove(path)
+        os.remove(file_info['path'])
+        return
+
     if user_id not in user_files:
         return await message.reply("⚠️ No file to rename.")
     new_name = message.text.strip()
@@ -247,7 +276,6 @@ async def handle_text(client, message):
 
     upload_tasks[user_id] = asyncio.create_task(do_upload())
 
-# ----------------- RUN -----------------
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, flask_app.run, "0.0.0.0", 5000)
